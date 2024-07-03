@@ -185,6 +185,7 @@ physeq_16S_ASV@sam_data$spiked.volume
 # Please note that the Spike cell numbers, species name, and selected hashcodes are customizable and can be tailored to the specific needs of individual studies.
 # Moreover, to proceed with the DspikeIn package, you only need to select one method to specify your spiked species: either by hashcodes or species name.
 
+library(phyloseq)
 # 16S rRNA
 presence of 'spiked.volume' column in metadata
 spiked_cells <-1847
@@ -212,8 +213,15 @@ This section demonstrates how to use various functions from the package to plot 
 ```r
 # In case there are still several ASVs rooting from the spiked species, you may want to check the phylogenetic distances.
 # We first read DNA sequences from a FASTA file, to perform multiple sequence alignment and compute a distance matrix using the maximum likelihood method, then we construct a phylogenetic tree
-# using the Neighbor-Joining method  based on a Jukes-Cantor distance matrix and plot the tree with bootstrap values.
+# Use the Neighbor-Joining method  based on a Jukes-Cantor distance matrix and plot the tree with bootstrap values.
 # we compare the Sanger read of Tetragenococcus halophilus with the FASTA sequence of Tetragenococcus halophilus from our phyloseq object.
+# Load required libraries
+  library(Biostrings)
+  library(msa)
+  library(phangorn)
+  library(ape)
+  library(speedyseq)
+  library(ggtree)
 
 # Subset the phyloseq object to include only Tetragenococcus species first
 Tetra <- subset_taxa(Tetra, !is.na(taxa_names(Tetra)) & taxa_names(Tetra) != "")
@@ -339,9 +347,8 @@ calculate_summary_stats_table(initial_stat_sampleWise)
 ```
 
 
-### Data Transformation
+*Check if transformation is required for spike volume variation.*
 
-*Check if the transformations is required.*
 
 ```r
 
@@ -349,29 +356,9 @@ calculate_summary_stats_table(initial_stat_sampleWise)
 readAdj16S <- adjust_abundance_one_third(spiked_16S_OTU, factor = 3)
 summ_count_phyloseq(readAdj16S)
 
-# Random subsampling with reduction factor
+# Random subsampling with reduction factor foe count and taxa
 red16S <- random_subsample_WithReductionFactor(spiked_16S_OTU, reduction_factor = 3)
 summ_count_phyloseq(red16S)
-
-# Proportion adjustment
-normalized_16S <- proportion_adj(spiked_16S_OTU, output_file = "proportion_adjusted_physeq.rds")
-summ_count_phyloseq(normalized_16S)
-
-# DESeq2 variance stabilizing transformation (VST)
-transformed_16S <- run_vst_analysis(spiked_16S_OTU)
-summ_count_phyloseq(transformed_16S)
-
-# Relativize and filter taxa based on selected thresholds
-FTspiked_16S <- relativized_filtered_taxa(
-  spiked_16S_OTU,
-  threshold_percentage = 0.0001,
-  threshold_mean_abundance = 0.0001,
-  threshold_count = 5,
-  threshold_relative_abundance = 0.0001)
-summ_count_phyloseq(FTspiked_16S)
-
-# Adjust prevalence based on the minimum reads
-spiked_16S_min <- adjusted_prevalence(spiked_16S_OTU, method = "min")
 
 
 ```
@@ -470,12 +457,228 @@ passed_physeq <- prune_samples(
 ```
 
 
+### Estimating Scaling Factors After Pre-Processing
+
+To estimate scaling factors, ensure you have the `merged_spiked_species` data, which contains the merged species derived from the spiking process.
+*As we have already merged either hashcodes or spiked species and are aware of the contents of the taxa table, we can proceed from here with merged_spiked_species.*
 
 
-## Data Normalization and Transformation
+```r
+# Define the merged spiked species
+merged_spiked_species <- c("Tetragenococcus_halophilus")
+
+# Calculate spikeIn factors
+result <- calculate_spikeIn_factors(Spiked_16S_OTU_scaled, spiked_cells, merged_spiked_species)
+
+# Check the outputs
+scaling_factors <- result$scaling_factors
+physeq_no_spiked <- result$physeq_no_spiked
+spiked_16S_total_reads <- result$spiked_16S_total_reads
+spiked_species_reads <- result$spiked_species_reads
+
+```
+
+
+# Convert Relative Counts to Absolute Counts and Create a New Phyloseq Object
+
+
+```r
+
+# Convert relative counts data to absolute counts
+physeq_16S_adj_scaled_AbsoluteCount <- convert_to_absolute_counts(Spiked_16S_OTU_scaled, scaling_factors)
+absolute <- convert_to_absolute_counts(Spiked_16S_OTU_scaled, scaling_factors)
+absolute_counts <- physeq_16S_adj_scaled_AbsoluteCount$absolute_counts
+physeq_absolute_abundance_16S_OTU <- physeq_16S_adj_scaled_AbsoluteCount$physeq_obj
+
+
+# summary statistics 
+post_eval_summary <- calculate_summary_stats_table(absolute_counts)
+print(post_eval_summary)
+
+
+```
+
+
+# Let's check the conclusion and get the report table of spiked species success or failure.
+
+
+
+```r
+
+# Define the parameters once.
+merged_spiked_species <- c("Tetragenococcus_halophilus")
+max_passed_range <- 35
+
+# Subset the phyloseq object to exclude blanks
+physeq_16S_adj_scaled_perc <- subset_samples(Spiked_16S_OTU_scaled, sample.or.blank != "blank")
+
+# Generate the spike success report and summary statistics
+summary_stats <- conclusion(physeq_16S_adj_scaled_perc, merged_spiked_species, max_passed_range)
+print(summary_stats)
+
+
+```
+
+Here is an example of a success or failure report:
+![success report](https://github.com/mghotbi/DspikeIn/assets/29090547/017cfa65-8b75-4625-8d49-6e4a67146193)
+
+
+
+```r
+
+#Save your file for later. Please stay tuned for the rest: Comparisons and several visualization methods to show how important it is to convert relative to absolute abundance in the context of microbial ecology.
+
+taxa_names(physeq_absolute_abundance_16S_OTU) <- paste0("ASV", seq(ntaxa(physeq_absolute_abundance_16S_OTU)))
+physeq_absolute_abundance_16S_OTU <- tidy_phyloseq(physeq_absolute_abundance_16S_OTU)
+saveRDS(physeq_absolute_abundance_16S_OTU, "physeq_absolute_abundance_16S_OTU.rds")
+
+```
+# Normalization and bias correction 
+
+
+```r
+# Bolstad, B.M., Irizarry, R.A., Åstrand, M. and Speed, T.P., 2003. A comparison of normalization methods for high-density oligonucleotide array data based on variance and bias. Bioinformatics, 19(2), pp.185-193.
+# Gagnon-Bartsch, J.A. and Speed, T.P., 2012. Using control genes to correct for unwanted variation in microarray data. Biostatistics, 13(3), pp.539-552.
+# Risso, D., Ngai, J., Speed, T.P. and Dudoit, S., 2014. Normalization of RNA-seq data using factor analysis of control genes or samples. Nature biotechnology, 32(9), pp.896-902.
+# Gagnon-Bartsch, J.A., Jacob, L. and Speed, T.P., 2013. Removing unwanted variation from high dimensional data with negative controls. Berkeley: Tech Reports from Dep Stat Univ California, pp.1-112.
+
+# Install and load required packages
+install.packages("https://cran.r-project.org/src/contrib/PoissonSeq_1.1.2.tar.gz", repos = NULL, type = "source")
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install(c("phyloseq", "DESeq2", "edgeR", "PoissonSeq", "preprocessCore", "sva", "EDASeq"))
+
+# Load required libraries
+library(RUVSeq)
+library(phyloseq)
+library(DESeq2)
+library(edgeR)
+library(PoissonSeq)
+library(preprocessCore)
+library(sva)
+library(EDASeq)
+library(Biobase)
+library(BiocGenerics)
+library(vegan)
+library(chemometrics)
+
+
+
+#ps is a phyloseq object without spiked species counts
+#One can calculate the scaling factor using any normalization method in the absence of spiked species counts, and then determine the spiked scaling factor. Crossing both #scaling factors with relative abundance helps quantify absolute abundance while correcting for bias
+
+ps = subset_samples(physeq_absolute_abundance_16S_OTU, !is.na(Animal.type))
+
+#  TC normalization
+result_TC <- normalization_set(ps, method = "TC", groups = sample_data(ps)$Animal.type)
+normalized_ps_TC <- result_TC$dat.normed
+scaling_factors_TC <- result_TC$scaling.factor
+
+# UQ normalization
+result_UQ <- normalization_set(ps, method = "UQ", groups = sample_data(ps)$Animal.type)
+normalized_ps_UQ <- result_UQ$dat.normed
+scaling_factors_UQ <- result_UQ$scaling.factor
+
+# Median normalization
+result_med <- normalization_set(ps, method = "med", groups = sample_data(ps)$Animal.type)
+normalized_ps_med <- result_med$dat.normed
+scaling_factors_med <- result_med$scaling.factor
+
+# DESeq normalization
+result_DESeq <- normalization_set(ps, method = "DESeq", groups = sample_data(ps)$Animal.type)
+normalized_ps_DESeq <- result_DESeq$dat.normed
+scaling_factors_DESeq <- result_DESeq$scaling.factor
+
+# PoissonSeq normalization
+result_PoissonSeq <- normalization_set(ps, method = "PoissonSeq")
+normalized_ps_PoissonSeq <- result_PoissonSeq$dat.normed
+scaling_factors_PoissonSeq <- result_PoissonSeq$scaling.factor
+
+# Quantile normalization
+result_QN <- normalization_set(ps, method = "QN")
+normalized_ps_QN <- result_QN$dat.normed
+scaling_factors_QN <- result_QN$scaling.factor
+
+# SVA normalization
+result_SVA <- normalization_set(ps, method = "SVA", groups = sample_data(ps)$Animal.type)
+normalized_ps_SVA <- result_SVA$dat.normed
+scaling_factors_SVA <- result_SVA$scaling.factor
+
+# RUVg normalization
+result_RUVg <- normalization_set(ps, method = "RUVg", groups = sample_data(ps)$Animal.type)
+normalized_ps_RUVg <- result_RUVg$dat.normed
+scaling_factors_RUVg <- result_RUVg$scaling.factor
+
+# RUVs normalization
+result_RUVs <- normalization_set(ps, method = "RUVs", groups = sample_data(ps)$Animal.type)
+normalized_ps_RUVs <- result_RUVs$dat.normed
+scaling_factors_RUVs <- result_RUVs$scaling.factor
+
+# RUVr normalization
+result_RUVr <- normalization_set(ps, method = "RUVr", groups = sample_data(ps)$Animal.type)
+normalized_ps_RUVr <- result_RUVr$dat.normed
+scaling_factors_RUVr <- result_RUVr$scaling.factor
+
+# TMM normalization
+result_TMM <- normalization_set(ps, method = "TMM", groups = sample_data(ps)$Animal.type)
+normalized_ps_TMM <- result_TMM$dat.normed
+scaling_factors_TMM <- result_TMM$scaling.factor
+
+# Data transformation 
+result_clr <- normalization_set(ps, method = "clr")
+normalized_ps_clr <- result_clr$dat.normed
+scaling_factors_clr <- result_clr$scaling.factor
+
+# Rarefying
+result_rar <- normalization_set(ps, method = "rar")
+normalized_ps_rar <- result_rar$dat.normed
+scaling_factors_rar <- result_rar$scaling.factor
+
+# CSS normalization
+result_css <- normalization_set(ps, method = "css")
+normalized_ps_css <- result_css$dat.normed
+scaling_factors_css <- result_css$scaling.factor
+
+# TSS normalization
+result_tss <- normalization_set(ps, method = "tss")
+normalized_ps_tss <- result_tss$dat.normed
+scaling_factors_tss <- result_tss$scaling.factor
+
+# RLE normalization
+result_rle <- normalization_set(ps, method = "rle")
+normalized_ps_rle <- result_rle$dat.normed
+scaling_factors_rle <- result_rle$scaling.factor
+
+# Save the scaling factors
+write.csv(scaling_factors_DESeq, file = "scaling_factors_DESeq.csv", row.names = FALSE)
+
+
+# Customized filtering and transformations
+# Proportion adjustment
+physeq<-physeq_absolute_abundance_16S_OTU
+normalized_physeq <- proportion_adj(physeq, output_file = "proportion_adjusted_physeq.rds")
+summ_count_phyloseq(normalized_16S)
+
+
+# Relativize and filter taxa based on selected thresholds
+FT_physeq <- relativized_filtered_taxa(
+  physeq,
+  threshold_percentage = 0.0001,
+  threshold_mean_abundance = 0.0001,
+  threshold_count = 5,
+  threshold_relative_abundance = 0.0001)
+summ_count_phyloseq(FT_physeq)
+
+# Adjust prevalence based on the minimum reads
+physeq_min <- adjusted_prevalence(physeq, method = "min")
+
+
+```
+
 *Experiment Repetition*
 
-Getting help from [Yerk et al., 2024](https://doi.org/10.1186/s40168-023-01747-z), we checked if we needed to normalize our data before/after calculating our spiked species to account for spiked volume variations and library preparation. We evaluated the need for compositionally aware data transformations, including centered log-ratio (CLR) transformation, DESeq2 variance stabilizing transformation (`run_vst_analysis`), subsampling with a reduced factor for count data (`random_subsample_WithReductionFactor`), proportion adjustment (`proportion.adj`), and prevalence adjustment (`adjusted_prevalence`). Additionally, we considered compositionally naïve data transformations, such as raw data and relative abundance-based transformations (`relativized_filtered_taxa`), before calculating spike-in scaling factors. The only noticeable variation in the percentage of retrieved spiked species was related to VST. Although this variation was not significant, we decided to continue with the raw data.
+Getting help from [Yerk et al., 2024](https://doi.org/10.1186/s40168-023-01747-z), We evaluated the need for compositionally aware data transformations, including centered log-ratio (CLR), and additive log-ratio (alr) transformation, DESeq2 variance stabilizing transformation (`run_vst_analysis`), subsampling with a reduced factor for count data (`random_subsample_WithReductionFactor`), proportion adjustment (`proportion.adj`), and prevalence adjustment (`adjusted_prevalence`). Additionally, we considered compositionally naïve data transformations, such as raw data and relative abundance-based transformations (`relativized_filtered_taxa`), and compared the results. The only noticeable variation in the percentage of retrieved spiked species was related to VST. However, this variation was not significant for spiked sp reterival%.
 
 
 You can repeat the experiment by transforming the data, calculating spike percentage using `calculate_spike_percentage()`, then checking for the homogeneity of variances using `Bartlett_test()` and ensuring the data is normally distributed using `Shapiro_Wilk_test()`. Finally, plot the results using `transform_plot()`.
@@ -525,77 +728,7 @@ transform_plot(data = scaled, x_var = "Methods", y_vars = y_vars, methods_var = 
 
 ---
 
-
-
-### Estimating Scaling Factors After Pre-Processing
-
-To estimate scaling factors, ensure you have the `merged_spiked_species` data, which contains the merged species derived from the spiking process.
-*As we have already merged either hashcodes or spiked species and are aware of the contents of the taxa table, we can proceed from here with merged_spiked_species.*
-
-
-```r
-# Define the merged spiked species
-merged_spiked_species <- c("Tetragenococcus_halophilus")
-
-# Calculate spikeIn factors
-result <- calculate_spikeIn_factors(Spiked_16S_OTU_scaled, spiked_cells, merged_spiked_species)
-
-# Check the outputs
-scaling_factors <- result$scaling_factors
-physeq_no_spiked <- result$physeq_no_spiked
-spiked_16S_total_reads <- result$spiked_16S_total_reads
-spiked_species_reads <- result$spiked_species_reads
-
-```
-
-
-# Convert Relative Counts to Absolute Counts and Create a New Phyloseq Object
-
-
-```r
-
-# Convert relative counts data to absolute counts
-physeq_16S_adj_scaled_AbsoluteCount <- convert_to_absolute_counts(Spiked_16S_OTU_scaled, scaling_factors)
-
-# summary statistics 
-post_eval_summary <- calculate_summary_stats_table(physeq_16S_adj_scaled_AbsoluteCount)
-print(post_eval_summary)
-
-# Create a new phyloseq obj with absolute counts
-physeq_16S_adj_scaled_absolute_abundance <- phyloseq(
-  otu_table = round(otu_table(Spiked_16S_OTU_scaled) * scaling_factors), 
-  taxa_table = tax_table(Spiked_16S_OTU_scaled),
-  phy_tree = phy_tree(Spiked_16S_OTU_scaled),
-  sample_data = sample_data(Spiked_16S_OTU_scaled))
-
-```
-
-
-# Let's check the conclusion and get the report table of spiked species success or failure.
-
-
-
-```r
-
-# Define the parameters once.
-merged_spiked_species <- c("Tetragenococcus_halophilus")
-max_passed_range <- 35
-
-# Subset the phyloseq object to exclude blanks
-physeq_16S_adj_scaled_perc <- subset_samples(Spiked_16S_OTU_scaled, sample.or.blank != "blank")
-
-# Generate the spike success report and summary statistics
-summary_stats <- conclusion(physeq_16S_adj_scaled_perc, merged_spiked_species, max_passed_range)
-print(summary_stats)
-
-
-```
-
-Here is an example of a success or failure report:
-![success report](https://github.com/mghotbi/DspikeIn/assets/29090547/017cfa65-8b75-4625-8d49-6e4a67146193)
-
-
-*Save your file for later. Please stay tuned for the rest: Comparisons and several visualization methods to show how important it is to convert relative to absolute abundance in the context of microbial ecology.*
+## Visualization and Differential abundance 
 
 
 ```r
@@ -670,7 +803,7 @@ core.microbiome <- readRDS("core.microbiome.rds")
 
 ```r
 
-# shift to dataframe and plot the abundance of taxa across the factors
+# shift to dataframe and plot the abundance of taxa across the factor of your interest
 # Load data
 meli_Abs_WSal <- readRDS("meli_Abs_WSal.rds")
 meli_Rel_WSal <- readRDS("meli_Rel_WSal.rds")
